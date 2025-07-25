@@ -17,23 +17,32 @@
 - wget：下载SRA 的精简版 .sralite 文件，通常用于网页预览、快速展示（不用于正式分析），可能缺少质量值（如你前面看到的全是 ?），在转换成 fastq 时会出现 warning，如 READLEN < 1
 - 内容比较
 ```
-# 1. 下载
+# 1. 两种下载方式
 prefetch SRR8644988
 wget https://sra-downloadb.be-md.ncbi.nlm.nih.gov/sos5/sra-pub-zq-16/SRR008/644/SRR8644988.sralite.1
 
-# 2. 文件大小差异
+# 2. 存在文件大小差异
 SRR8644988.sra        # 249MB
 SRR8644988.sralite.1  # 192MB
 
-# 3. 解压结果存在差异
+# 3. 存在解压结果差异
 # 两种解压方式对 .sra 文件解压，解压后文件大小一致
-# 2.68 GB
-fasterq-dump --split-files --threads 16 SRR8644988.sra 
-fastq-dump --split-files SRR8644988.sra
-
+fasterq-dump --split-files --threads 16 SRR8644988.sra      # 2.68 GB 
+fastq-dump --split-files SRR8644988.sra                     # 2.68 GB
+# 对 .sralite.1 文件解压，解压后文件大小不同
 fasterq-dump --split-files --threads 16 SRR8644988.sralite.1  # 2.97GB
 fastq-dump --split-files SRR8644988.sralite.1                 # 2.68GB
+
+# 4. prefetch 参数
+prefetch --progress --output-directory ./datasets SRR8644988
+# 文件会输出到 ./datasets/SRR8644988 文件夹下
+
+fasterq-dump --split-files --threads 16 SRR8644988.sra 
 ```
+
+
+
+
 
 #### 2. 解压方式：fasterq-dump 和 fastq-dump
 - **fasterq-dump 首选**：可多线程，快速，稳定，**不可输出为压缩文件**
