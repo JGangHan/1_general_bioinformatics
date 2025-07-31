@@ -13,7 +13,7 @@
 | **SRA Run 编号** | **SRR8644988 和 SRR8644989**               |
 
 ### 1. 下载方式：wget 或 prefetch
-- **prefetch 首选**：下载 .sra 文件是完整格式，包含：原始 reads，质量分数（Phred+33）等关键信息
+- prefetch （首选）：下载 .sra 文件是完整格式，包含：原始 reads，质量分数（Phred+33）等关键信息
 - wget：下载SRA 的精简版 .sralite 文件，通常用于网页预览、快速展示（不用于正式分析），可能缺少质量值（如你前面看到的全是 ?），在转换成 fastq 时会出现 warning，如 READLEN < 1
 - 内容比较
 ```
@@ -74,7 +74,7 @@ fasterq-dump --split-files -e 32 -O ./fastq SRR5852272.sra
 ### 3. 大批量样本下载和转换
 **一般情况：单样本对应单个SRR ID**
 **实现批量下载、判断单双端、转为fastq格式、重命名为样品名、压缩为 .gz 格式，并检查各步骤完成情况，若失败SRR ID单独保存，并转移至下一个SRR ID**
-- 准备文件一：sample_list.txt
+- 1. 准备文件一：sample_list.txt
 ```
 # 第一列 SRR ID，第二列 Sample ID
 SRR23955350	Hu_1
@@ -85,7 +85,7 @@ SRR23955349	Hu_4
 SRR23955346	Hu_5
 SRR23955343	Hu_6
 ```
-- 准备文件二：batch_download.sh
+- 2. 准备文件二：batch_download.sh
 ```
 #!/bin/bash
 
@@ -168,6 +168,16 @@ do
 
 done < "$INPUT_FILE"
 ```
+- 3. 确认步骤
+```
+# 转为 unix 格式
+dos2unix sample_list.txt
+dos2unix batch_download.sh
+
+# 更改权限
+chmod +x batch_download.sh
+nohup sh batch_download.sh &
+```
 - 输出文件一：日志文件 .log
 ```
 # 若成功
@@ -189,44 +199,162 @@ done < "$INPUT_FILE"
 
 
 ### 4. 特殊情况：单样本对应多个SRR ID
-**Y2_6 样本对应	ERR2074457 ERR2074458 ERR2074459 ERR2074460 ERR2074461 ERR2074462 等多个 SRR ID**  
-原因：一个样本多次上机，或在多个泳道进行测序，从而产生多个测序文件
-处理流程：下载每个 SRR ID，转换为 fastq，合并 fastq，重命名并压缩
-
+**Y2_6 样本对应	ERR2074457 ERR2074458 ERR2074459 ERR2074460 ERR2074461 ERR2074462 等多个 SRR ID**   
+原因：一个样本多次上机，或在多个泳道进行测序，从而产生多个测序文件  
+**处理流程：下载每个 SRR ID，转换为 fastq，检查双端或单端读段，合并 fastq，重命名并压缩**  
+- 1. 准备文件一：sample_list.txt
 ```
-
-
-
-
-
-
+# 第一列：samplename  其他列：SRR ID
+Y2_4	ERR2075132 ERR2075133 ERR2075134 ERR2075135 ERR2075136 ERR2075137 ERR2075138 ERR2075139 ERR2075140 ERR2075141	
+Y2_5	ERR2074709 ERR2074710 ERR2074711 ERR2074712 ERR2074713 ERR2074714 ERR2074715 ERR2074716 ERR2074717	
+Y2_6	ERR2074457 ERR2074458 ERR2074459 ERR2074460 ERR2074461 ERR2074462	
 ```
+- 2. 准备文件二：batch_download.sh
+```
+#!/bin/bash
+
+# 设置线程数
+THREADS=32
+
+# 输入映射文件（第一列是样品名，后续列为对应 SRR ID）
+INPUT_FILE="download.txt"
+
+# 日志文件
+LOG_FILE="download_process_$(date +%Y%m%d_%H%M%S).log"
+FAILED_FILE="failed_ids.txt"
+
+# 输出目录
+SRA_CACHE_DIR="/data/hanjiangang/Sheep_Muscle_Saline/datasets/sra_cache"
+FASTQ_DIR="/data/hanjiangang/Sheep_Muscle_Saline/datasets/fastq"
+mkdir -p "$SRA_CACHE_DIR"
+mkdir -p "$FASTQ_DIR"
+
+log_msg() {
+    echo "$(date +'%Y-%m-%d %H:%M:%S') $1" | tee -a "$LOG_FILE"
+}
+
+# 读取文件，每行处理一个样本及其所有 SRR ID
+while IFS=$'\t' read -r SAMPLE_ID SRR_LIST
+do
+    [[ -z "$SAMPLE_ID" ]] && continue
+
+    log_msg "开始处理样本 $SAMPLE_ID"
+
+    # 准备用于合并的文件
+    TMP_MERGE_1="$FASTQ_DIR/${SAMPLE_ID}_1.fastq"
+    TMP_MERGE_2="$FASTQ_DIR/${SAMPLE_ID}_2.fastq"
+    TMP_MERGE_SINGLE="$FASTQ_DIR/${SAMPLE_ID}.fastq"
+
+    # 清空旧文件（防止追加到已有内容）
+    > "$TMP_MERGE_1"
+    > "$TMP_MERGE_2"
+    > "$TMP_MERGE_SINGLE"
+
+    # 遍历该样本所有的 SRR ID
+    for SRR_ID in $SRR_LIST; do
+        log_msg "  处理 $SRR_ID"
+
+        # 检查是否已有 .sra 文件
+        if [[ ! -f "$SRA_CACHE_DIR/$SRR_ID/$SRR_ID.sra" ]]; then
+            if prefetch --progress --output-directory "$SRA_CACHE_DIR" "$SRR_ID"; then
+                log_msg "  $SRR_ID 下载成功"
+            else
+                log_msg "  $SRR_ID 下载失败，跳过"
+                echo "$SRR_ID" >> "$FAILED_FILE"
+                continue
+            fi
+        else
+            log_msg "  $SRR_ID 已存在，跳过下载"
+        fi
+
+        # 转换 fastq
+        if fasterq-dump "$SRA_CACHE_DIR/$SRR_ID" -e "$THREADS" -O "$SRA_CACHE_DIR/$SRR_ID"; then
+            log_msg "  $SRR_ID 转换成功"
+        else
+            log_msg "  $SRR_ID 转换失败，跳过"
+            echo "$SRR_ID" >> "$FAILED_FILE"
+            continue
+        fi
+
+        # 判断单双端并追加合并
+        FQ1="$SRA_CACHE_DIR/$SRR_ID/${SRR_ID}_1.fastq"
+        FQ2="$SRA_CACHE_DIR/$SRR_ID/${SRR_ID}_2.fastq"
+        FQ_SINGLE="$SRA_CACHE_DIR/$SRR_ID/${SRR_ID}.fastq"
+
+        if [[ -f "$FQ2" ]]; then
+            log_msg "  $SRR_ID 为双端测序"
+            cat "$FQ1" >> "$TMP_MERGE_1"
+            cat "$FQ2" >> "$TMP_MERGE_2"
+        elif [[ -f "$FQ_SINGLE" ]]; then
+            log_msg "  $SRR_ID 为单端测序"
+            cat "$FQ_SINGLE" >> "$TMP_MERGE_SINGLE"
+        else
+            log_msg "  $SRR_ID 未检测到 fastq 文件，跳过"
+            echo "$SRR_ID" >> "$FAILED_FILE"
+            continue
+        fi
+    done
+
+    # 压缩合并结果
+    if [[ -s "$TMP_MERGE_1" && -s "$TMP_MERGE_2" ]]; then
+        gzip "$TMP_MERGE_1"
+        gzip "$TMP_MERGE_2"
+        log_msg "$SAMPLE_ID 双端合并完成：${SAMPLE_ID}_1.fastq.gz, ${SAMPLE_ID}_2.fastq.gz"
+    elif [[ -s "$TMP_MERGE_SINGLE" ]]; then
+        gzip "$TMP_MERGE_SINGLE"
+        log_msg "$SAMPLE_ID 单端合并完成：${SAMPLE_ID}.fastq.gz"
+    else
+        log_msg "$SAMPLE_ID 未成功合并任何 fastq 数据"
+    fi
+
+    log_msg "$SAMPLE_ID 样本处理完成"
+
+done < "$INPUT_FILE"
+```
+- 3. 确认步骤
+```
+# 转为 unix 格式
+dos2unix sample_list.txt
+dos2unix batch_download.sh
+
+# 更改权限
+chmod +x batch_download.sh
+nohup sh batch_download.sh &
+```
+- 输出文件一：日志文件 .log
+```
+# 若成功
+2025-07-28 14:49:25 开始处理样本 Y2_4
+2025-07-28 14:49:25   处理 ERR2075132
+2025-07-28 14:53:14   ERR2075132 下载成功
+2025-07-28 14:53:31   ERR2075132 转换成功
+2025-07-28 14:53:31   ERR2075132 为双端测序
+2025-07-28 14:53:46   处理 ERR2075133
+2025-07-28 14:58:21   ERR2075133 下载成功
+2025-07-28 14:58:35   ERR2075133 转换成功
+2025-07-28 14:58:35   ERR2075133 为双端测序
+.................................
+2025-07-28 15:47:57   处理 ERR2075141
+2025-07-28 15:50:16   ERR2075141 下载成功
+2025-07-28 15:50:34   ERR2075141 转换成功
+2025-07-28 15:50:34   ERR2075141 为双端测序
+2025-07-28 16:23:48 Y2_4 双端合并完成：Y2_4_1.fastq.gz, Y2_4_2.fastq.gz
+2025-07-28 16:23:48 Y2_4 样本处理完成
+```
+- 输出文件二：FASTQ_DIR="/data/hanjiangang/Sheep_Muscle_Saline/datasets/fastq"路径下的 rename.fastq.gz 文件
 
 
 
-
-
-
-
-
-### 5. 更加特殊情况：单样本对应多个SRR ID，但
-
-
+### 5. 极端特殊情况：单样本对应多个SRR ID，不同的 SRR ID 有的被解压为单端读段，有的被解压为双端读段
+- 可能原因：上传人傻逼，将不同的转录组类型同时上传，并且不标注，mRNA测序为双端读段，其他类型RNA测序为单端读段，如下
+```
 E135_1	SRR8645004	SRR8645005
 E135_2	SRR8645002	SRR8645003
 E135_3	SRR8645000	SRR8645001
-
-**后续分析怎么做？**
-对于下游分析（如差异表达、聚类等），应将两个 SRR 的数据合并使用，因为它们共同代表一个样本。
+# SRR8645000 被转换为单端读段，数据量小，测序模式 SE50
+# SRR8645001 被转换为双端读段，数据量小，测序模式 PE150
 ```
-cat SRR8644988.fastq SRR8644989.fastq > D85N1.fastq
-```
-
-
-
-
-
-
+- 怎么处理：手动排除
 
 
 
